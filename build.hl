@@ -1,1 +1,388 @@
+#!/usr/bin/env hl
+/// BEDM — Blue Environment Display Manager Build System
+using <gen 2>
 
+# <main/colors>
+# <main/sys>
+# <main/fs>
+
+;; ── Konfiguracja Zmiennych Środowiskowych ─────────────────────────────────────
+% PREFIX: str     = /usr
+% SYSCONFDIR: str = /etc
+% VARDIR: str     = /var
+% RUNDIR: str     = /run
+% SYSTEMDDIR: str = /usr/lib/systemd/system
+% DESTDIR: str    = 
+% VERSION: str    = 0.6.0
+
+;; Nadpisz z ENV jeśli ustawione
+> test -n "$PREFIX"
+? ok
+    > echo "$PREFIX" |> @PREFIX
+done
+> test -n "$SYSCONFDIR"
+? ok
+    > echo "$SYSCONFDIR" |> @SYSCONFDIR
+done
+> test -n "$VARDIR"
+? ok
+    > echo "$VARDIR" |> @VARDIR
+done
+> test -n "$RUNDIR"
+? ok
+    > echo "$RUNDIR" |> @RUNDIR
+done
+> test -n "$SYSTEMDDIR"
+? ok
+    > echo "$SYSTEMDDIR" |> @SYSTEMDDIR
+done
+> test -n "$DESTDIR"
+? ok
+    > echo "$DESTDIR" |> @DESTDIR
+done
+> test -n "$VERSION"
+? ok
+    > echo "$VERSION" |> @VERSION
+done
+
+% BINDIR: str   = @PREFIX/bin
+% SHAREDIR: str = @PREFIX/share/bedm
+% PAMDIR: str   = @SYSCONFDIR/pam.d
+% CARGO: str    = cargo
+% NPM: str      = npm
+% TAURI: str    = "npx tauri"
+
+;; ── Helpery ───────────────────────────────────────────────────────────────────
+: log_green def
+    ::green @_1
+done
+
+: log_yellow def
+    ::yellow @_1
+done
+
+: log_cyan def
+    ::cyan @_1
+done
+
+: install_file def
+    % src: str  = @_1
+    % dest: str = @_2
+    % mode: str = @_3
+    > mkdir -p $(dirname @dest)
+    > cp @src @dest
+    > chmod @mode @dest
+done
+
+;; ── Build ─────────────────────────────────────────────────────────────────────
+: build_daemon def
+    -- log_cyan "→ Building bedm daemon..."
+    > cd bedm-daemon && @CARGO build --release
+    ? ok
+        -- log_green "✓ bedm daemon built"
+        % ok: bool = true
+    done
+    ? err
+        -- log_yellow "! bedm daemon build failed"
+        % ok: bool = false
+    done
+done
+
+: build_greeter def
+    -- log_cyan "→ Building bedm-ui..."
+    > cd bedm-ui && @NPM install && @NPM run build
+    ? err
+        -- log_yellow "! bedm-ui build failed"
+        % ok: bool = false
+        -- return
+    done
+
+    -- log_cyan "→ Building bedm-greeter (Tauri)..."
+    > cd bedm-greeter && @TAURI build
+    ? ok
+        -- log_green "✓ bedm-greeter built"
+        % ok: bool = true
+    done
+    ? err
+        -- log_yellow "! bedm-greeter build failed"
+        % ok: bool = false
+    done
+done
+
+: cmd_build def
+    -- build_daemon
+    ? switch @ok
+    | false
+        > exit 1
+    done
+    -- build_greeter
+    ? switch @ok
+    | false
+        > exit 1
+    done
+    -- log_green "✓ BEDM build complete"
+done
+
+;; ── Development ───────────────────────────────────────────────────────────────
+: cmd_dev_greeter def
+    -- log_cyan "→ Starting greeter in dev mode..."
+    > cd bedm-greeter && @TAURI dev
+done
+
+: cmd_dev_ui def
+    -- log_cyan "→ Starting UI dev server..."
+    > cd bedm-ui && @NPM run dev
+done
+
+;; ── Install ───────────────────────────────────────────────────────────────────
+: install_systemd def
+    -- log_cyan "→ Installing systemd service..."
+    -- install_file systemd/bedm.service @DESTDIR@SYSTEMDDIR/bedm.service 0644
+    ? switch @DESTDIR
+    | 
+        > systemctl daemon-reload 2>/dev/null || true
+    done
+done
+
+: install_pam def
+    -- log_cyan "→ Installing PAM config..."
+    -- install_file config/pam-bedm @DESTDIR@PAMDIR/bedm 0644
+done
+
+: install_config def
+    -- log_cyan "→ Installing default config..."
+    % config_path: str = @DESTDIR@SYSCONFDIR/bedm/bedm.toml
+    > test -f @config_path
+    ? err
+        -- install_file config/bedm.toml @config_path 0644
+        -- log_green "✓ Config installed to @config_path"
+    done
+    ? ok
+        -- log_yellow "! Existing config preserved (@config_path)"
+    done
+done
+
+: cmd_install def
+    -- cmd_build
+    -- install_systemd
+    -- install_pam
+    -- install_config
+
+    -- log_cyan "→ Installing binaries..."
+    -- install_file bedm-daemon/target/release/bedm @DESTDIR@BINDIR/bedm 0755
+    -- install_file bedm-greeter/target/release/bedm-greeter @DESTDIR@BINDIR/bedm-greeter 0755
+
+    -- log_cyan "→ Creating runtime dirs..."
+    > mkdir -p -m 0755 @DESTDIR@RUNDIR/bedm
+    > mkdir -p -m 0755 @DESTDIR@RUNDIR/bedm/sessions
+    > mkdir -p -m 0755 @DESTDIR@VARDIR/lib/bedm
+    > mkdir -p -m 0755 @DESTDIR@VARDIR/log/bedm
+
+    -- log_green "✓ BEDM installed to @DESTDIR@BINDIR"
+    ~>
+    -- log_yellow "Next steps:"
+    ~>  1. Disable your current DM: systemctl disable gdm sddm lightdm 2>/dev/null || true
+    ~>  2. Enable BEDM: systemctl enable bedm
+    ~>  3. Start BEDM: systemctl start bedm
+    ~>     OR reboot to apply.
+done
+
+;; ── Uninstall ─────────────────────────────────────────────────────────────────
+: cmd_uninstall def
+    -- log_cyan "→ Uninstalling BEDM..."
+    > systemctl stop bedm 2>/dev/null || true
+    > systemctl disable bedm 2>/dev/null || true
+
+    > rm -f @BINDIR/bedm
+    > rm -f @BINDIR/bedm-greeter
+    > rm -f @SYSTEMDDIR/bedm.service
+    > rm -f @PAMDIR/bedm
+
+    > systemctl daemon-reload 2>/dev/null || true
+
+    -- log_green "✓ BEDM uninstalled"
+    -- log_yellow "Note: config at /etc/bedm/ and logs at /var/log/bedm/ kept"
+done
+
+;; ── Quality ───────────────────────────────────────────────────────────────────
+: cmd_check def
+    > cd bedm-daemon && @CARGO check
+    > cd bedm-greeter && @CARGO check
+done
+
+: cmd_lint def
+    > cd bedm-daemon && @CARGO clippy -- -D warnings
+    > cd bedm-greeter && @CARGO clippy -- -D warnings
+    > cd bedm-ui && @NPM run lint 2>/dev/null || true
+done
+
+: cmd_clean def
+    > cd bedm-daemon && @CARGO clean
+    > cd bedm-greeter && @CARGO clean
+    > rm -rf bedm-ui/dist bedm-ui/node_modules
+done
+
+;; ── Package ───────────────────────────────────────────────────────────────────
+: cmd_dist def
+    -- cmd_build
+    -- log_cyan "→ Creating distribution tarball..."
+    % tmp_dir: str = dist-tmp/bedm-@VERSION
+    > mkdir -p @tmp_dir
+
+    > cp bedm-daemon/target/release/bedm @tmp_dir/
+    > cp bedm-greeter/target/release/bedm-greeter @tmp_dir/
+    > cp -r config/ systemd/ Makefile README.md @tmp_dir/ 2>/dev/null || true
+
+    > tar -czf bedm-@VERSION.tar.gz -C dist-tmp bedm-@VERSION
+    > rm -rf dist-tmp
+
+    -- log_green "✓ bedm-@VERSION.tar.gz"
+done
+
+: cmd_rpm def
+    -- cmd_build
+    -- log_cyan "→ Building BEDM .rpm..."
+
+    > which rpmbuild > /dev/null 2>&1
+    ? err
+        -- log_yellow "! rpmbuild not found — install the \"rpm-build\" package"
+        > exit 1
+    done
+
+    % topdir: str = rpmbuild
+    > mkdir -p @topdir/BUILD @topdir/RPMS @topdir/SOURCES @topdir/SPECS @topdir/SRPMS
+    > cp bedm-daemon/target/release/bedm @topdir/SOURCES/bedm
+    > cp bedm-greeter/target/release/bedm-greeter @topdir/SOURCES/bedm-greeter
+
+    % spec_out: str = @topdir/SPECS/bedm.spec
+    > sed "s/@VERSION@/@VERSION/g" ../packaging/BEDM/bedm.spec > @spec_out 2>/dev/null || cp ../packaging/BEDM/bedm.spec @spec_out
+
+    > rpmbuild -bb @spec_out --define "_topdir $(pwd)/@topdir"
+    -- log_green "✓ BEDM RPM → @topdir/RPMS/"
+done
+
+: cmd_deb def
+    -- cmd_build
+    -- log_cyan "→ Building BEDM .deb..."
+
+    > which dpkg-deb > /dev/null 2>&1
+    ? err
+        -- log_yellow "! dpkg-deb not found — install the \"dpkg-dev\" package"
+        > exit 1
+    done
+
+    % root: str = build/deb/bedm
+    > rm -rf @root
+    > mkdir -p @root/DEBIAN
+    > mkdir -p @root@BINDIR
+    > mkdir -p @root/usr/lib/systemd/system
+    > mkdir -p @root@PAMDIR
+    > mkdir -p @root@SYSCONFDIR/bedm
+
+    -- install_file bedm-daemon/target/release/bedm @root@BINDIR/bedm 0755
+    -- install_file bedm-greeter/target/release/bedm-greeter @root@BINDIR/bedm-greeter 0755
+    -- install_file systemd/bedm.service @root/usr/lib/systemd/system/bedm.service 0644
+    -- install_file config/pam-bedm @root@PAMDIR/bedm 0644
+    -- install_file config/bedm.toml @root@SYSCONFDIR/bedm/bedm.toml 0644
+
+    > cat ../packaging/BEDM/control 2>/dev/null |> @control_src
+    ;; uproszczone — dopisujemy Version
+    > echo "Version: @VERSION" > @root/DEBIAN/control
+    > test -n "@control_src"
+    ? ok
+        > echo "@control_src" >> @root/DEBIAN/control
+    done
+
+    > mkdir -p dist
+    % out: str = dist/bedm_@VERSION_amd64.deb
+    > dpkg-deb --root-owner-group --build @root @out
+    -- log_green "✓ BEDM DEB → @out"
+done
+
+: cmd_packages def
+    -- cmd_build
+    > which rpmbuild > /dev/null 2>&1
+    ? ok
+        -- cmd_rpm
+    done
+    > which dpkg-deb > /dev/null 2>&1
+    ? ok
+        -- cmd_deb
+    done
+done
+
+;; ── Help ──────────────────────────────────────────────────────────────────────
+: cmd_help def
+    -- log_cyan "BEDM — Blue Environment Display Manager"
+    ~>
+    -- log_yellow "Build:"
+    ~>  hl bedm.hl build          — Build daemon + greeter (release)
+    ~>  hl bedm.hl build-daemon   — Build only the daemon
+    ~>  hl bedm.hl build-greeter  — Build only the greeter
+    ~>
+    -- log_yellow "Development:"
+    ~>  hl bedm.hl dev-greeter    — Start greeter in Tauri dev mode
+    ~>  hl bedm.hl dev-ui         — Start React UI dev server
+    ~>
+    -- log_yellow "Install (run as root):"
+    ~>  hl bedm.hl install        — Full install
+    ~>  hl bedm.hl uninstall      — Remove BEDM
+    ~>
+    -- log_yellow "Packaging:"
+    ~>  hl bedm.hl rpm            — Build a .rpm installer (needs rpmbuild)
+    ~>  hl bedm.hl deb            — Build a .deb installer (needs dpkg-deb)
+    ~>  hl bedm.hl packages       — Build every installer format available here
+    ~>  hl bedm.hl dist           — Build a plain .tar.gz distribution archive
+    ~>
+    -- log_yellow "Quality:"
+    ~>  hl bedm.hl check          — cargo check
+    ~>  hl bedm.hl lint           — clippy + npm lint
+    ~>  hl bedm.hl clean          — Clean build artifacts
+    ~>
+    -- log_yellow "Environment:"
+    ~>  PREFIX=@PREFIX  SYSCONFDIR=@SYSCONFDIR  VERSION=@VERSION
+    ~>
+done
+
+;; ── MAIN ──────────────────────────────────────────────────────────────────────
+% action: str = @arg0
+
+? switch @action
+| 
+| help
+| -h
+| --help
+    -- cmd_help
+| build
+    -- cmd_build
+| build-daemon
+    -- build_daemon
+| build-greeter
+    -- build_greeter
+| dev-greeter
+    -- cmd_dev_greeter
+| dev-ui
+    -- cmd_dev_ui
+| install
+    -- cmd_install
+| uninstall
+    -- cmd_uninstall
+| check
+    -- cmd_check
+| lint
+    -- cmd_lint
+| clean
+    -- cmd_clean
+| dist
+    -- cmd_dist
+| rpm
+    -- cmd_rpm
+| deb
+    -- cmd_deb
+| packages
+    -- cmd_packages
+| *
+    ::red ✗ Unknown command: @action
+    ::yellow Run: hl bedm.hl help
+    > exit 1
+done
