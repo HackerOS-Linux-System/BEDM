@@ -1,5 +1,4 @@
-#!/usr/bin/env hl
-/// BEDM — Blue Environment Display Manager Build System
+#!/usr/bin/hl
 using <gen 2>
 
 # <main/colors>
